@@ -1,27 +1,20 @@
-# Unity 客户端连接指南 (针对微信小游戏)
+# Unity 客户端连接指南 (针对微信小游戏 - MemoryPack 二进制版)
 
-在 Unity 中连接到基于 Orleans 和 SignalR 的网关，需要考虑微信小游戏的特殊网络环境。
+在 Unity 中连接到基于 Orleans 和 SignalR 的网关，并使用 MemoryPack 进行高性能二进制序列化。
 
-## 1. 方案选择
+## 1. 为什么使用二进制传输？
 
-### 方案 A: 使用 SignalR C# 客户端 (推荐用于开发和非微信平台)
-使用 `Microsoft.AspNetCore.SignalR.Client` NuGet 包。但在发布到微信小游戏时，由于微信小游戏的 WebSocket API 不同，可能需要适配。
+由于目前 SignalR 官方尚未内置 MemoryPack 协议支持，我们采用 **"SignalR + Byte Array + MemoryPack"** 的方案。这种方案：
+- **兼容性最强**: 绕过了复杂的 HubProtocol 实现。
+- **性能极高**: 核心数据依然通过 MemoryPack 序列化。
+- **易于调试**: 可以在同一 Hub 中混合使用 JSON 和二进制方法。
 
-### 方案 B: 使用微信小游戏专用 SignalR 适配器 (推荐用于微信小游戏)
-微信小游戏环境推荐使用 JavaScript 版本的 SignalR 客户端，并通过 Unity 的 `JSB` (JavaScript Bridge) 进行调用。
-
-## 2. 微信小游戏适配要点
-
-微信小游戏不支持标准的浏览器 WebSocket，需要使用 `wx.connectSocket`。
-对于 SignalR，可以使用开源的适配器，例如 [signalr-wxapp](https://github.com/m-Ryan/signalr-wxapp) 或者在 Unity 微信小游戏 SDK 中提供的网络适配层。
-
-## 3. Unity 代码示例 (C#)
-
-假设您使用的是支持微信环境的 SignalR 客户端插件：
+## 2. Unity 代码示例 (C#)
 
 ```csharp
 using Microsoft.AspNetCore.SignalR.Client;
 using UnityEngine;
+using MemoryPack;
 using System.Threading.Tasks;
 
 public class GameClient : MonoBehaviour
@@ -30,54 +23,61 @@ public class GameClient : MonoBehaviour
 
     async void Start()
     {
-        // 网关地址
-        string hubUrl = "http://your-gateway-ip:port/gamehub";
+        string hubUrl = "http://your-gateway-ip:5000/gamehub";
 
         _connection = new HubConnectionBuilder()
             .WithUrl(hubUrl)
             .WithAutomaticReconnect()
             .Build();
 
-        _connection.On<string>("ReceiveMessage", (message) =>
-        {
-            Debug.Log($"收到服务器消息: {message}");
-        });
+        await _connection.StartAsync();
+        Debug.Log("已连接到网关");
 
-        try
-        {
-            await _connection.StartAsync();
-            Debug.Log("已连接到网关");
+        // 1. 准备数据对象
+        var msg = new GameMessage { PlayerId = "Player_123", Content = "Hello from Unity!" };
 
-            // 调用网关方法，网关会调度到 Orleans Grain
-            string result = await _connection.InvokeAsync<string>("SendMessage", "Player_123", "Hello Manus!");
-            Debug.Log($"Grain 返回: {result}");
-        }
-        catch (System.Exception ex)
-        {
-            Debug.LogError($"连接失败: {ex.Message}");
-        }
+        // 2. 使用 MemoryPack 序列化为字节数组
+        byte[] bin = MemoryPackSerializer.Serialize(msg);
+
+        // 3. 通过 SignalR 发送二进制数据，并接收二进制返回
+        byte[] resultBin = await _connection.InvokeAsync<byte[]>("SendMessageBinary", bin);
+
+        // 4. 反序列化结果
+        string result = MemoryPackSerializer.Deserialize<string>(resultBin);
+        Debug.Log($"服务器返回: {result}");
     }
 
     public async void SendPosition(float x, float y, float z)
     {
         if (_connection.State == HubConnectionState.Connected)
         {
-            await _connection.SendAsync("UpdatePosition", "Player_123", x, y, z);
+            var update = new PositionUpdate { PlayerId = "Player_123", X = x, Y = y, Z = z };
+            byte[] bin = MemoryPackSerializer.Serialize(update);
+            
+            // 使用 SendAsync 发送不等待返回的二进制数据
+            await _connection.SendAsync("UpdatePositionBinary", bin);
         }
     }
 }
 ```
 
-## 4. 微信小游戏配置
+## 3. 微信小游戏适配
 
-1.  **域名白名单**: 在微信公众平台后台，将您的网关域名添加到 `socket 合法域名` 中。
-2.  **协议**: 生产环境必须使用 `wss://`。
-3.  **适配层**: 如果使用 Unity 官方的微信小游戏转换工具，确保在转换设置中开启了网络适配。
+在微信小游戏环境中，确保您的 WebSocket 适配器支持二进制（ArrayBuffer）传输。
 
-## 5. 网关调度逻辑说明
+1.  **MemoryPack JS**: 如果您在微信小游戏侧使用 JavaScript，可以使用 MemoryPack 的 TypeScript 生成功能。
+2.  **二进制处理**: 微信小游戏的 `wx.sendSocketMessage` 接受 `ArrayBuffer`，这与 SignalR 的二进制帧是兼容的。
 
-在我们的实现中，`GameHub` 充当了中转站：
-1.  客户端通过 SignalR 调用 `GameHub.SendMessage(playerId, message)`。
-2.  `GameHub` 内部通过 `IClusterClient` 获取 `IPlayerGrain` 的引用：`_client.GetGrain<IPlayerGrain>(playerId)`。
-3.  `GameHub` 调用 Grain 的方法并等待结果。
-4.  `GameHub` 将结果返回给客户端。
+## 4. 网关端实现说明
+
+网关 Hub 方法接收 `byte[]`，内部调用 `MemoryPackSerializer.Deserialize<T>(data)` 还原对象，处理完成后再通过 `MemoryPackSerializer.Serialize(result)` 返回。
+
+```csharp
+public async Task<byte[]> SendMessageBinary(byte[] data)
+{
+    var message = MemoryPackSerializer.Deserialize<GameMessage>(data);
+    var grain = _client.GetGrain<IPlayerGrain>(message.PlayerId);
+    var result = await grain.SayHello(message);
+    return MemoryPackSerializer.Serialize(result);
+}
+```

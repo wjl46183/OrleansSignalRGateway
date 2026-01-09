@@ -14,22 +14,25 @@ public class PlayerGrain : Grain, IPlayerGrain
         _logger = logger;
     }
 
-    public Task<string> SayHello(string greeting)
+    public Task<string> SayHello(GameMessage message)
     {
-        _lastGreeting = greeting;
-        _logger.LogInformation($"Player {this.GetPrimaryKeyString()} received greeting: {greeting}");
-        return Task.FromResult($"Hello from Grain! You said: {greeting}");
+        _lastGreeting = message.Content;
+        _logger.LogInformation($"Player {this.GetPrimaryKeyString()} received greeting: {message.Content}");
+        return Task.FromResult($"Hello from Grain! You said: {message.Content}");
     }
 
-    public Task UpdatePosition(float x, float y, float z)
+    public Task UpdatePosition(PositionUpdate update)
     {
-        _position = (x, y, z);
-        _logger.LogInformation($"Player {this.GetPrimaryKeyString()} moved to ({x}, {y}, {z})");
+        _position = (update.X, update.Y, update.Z);
+        _logger.LogInformation($"Player {this.GetPrimaryKeyString()} moved to ({update.X}, {update.Y}, {update.Z})");
         return Task.CompletedTask;
     }
 
-    public Task<string> GetStatus()
+    public Task<PlayerStatusResponse> GetStatus()
     {
-        return Task.FromResult($"Last Greeting: {_lastGreeting}, Position: ({_position.x}, {_position.y}, {_position.z})");
+        return Task.FromResult(new PlayerStatusResponse 
+        { 
+            Status = $"Last Greeting: {_lastGreeting}, Position: ({_position.x}, {_position.y}, {_position.z})" 
+        });
     }
 }
