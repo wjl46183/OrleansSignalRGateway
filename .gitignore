@@ -1,0 +1,9 @@
+[Bb]in/
+[Oo]bj/
+*.log
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
