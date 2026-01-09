@@ -1,0 +1,3 @@
+﻿<Project>
+  <Import Project="../build/OrleansSignalR.Gateway.props" />
+</Project>
